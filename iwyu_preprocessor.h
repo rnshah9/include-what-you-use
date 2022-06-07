@@ -199,7 +199,7 @@ class IwyuPreprocessorInfo : public clang::PPCallbacks,
                           llvm::StringRef search_path,
                           llvm::StringRef relative_path,
                           const clang::Module* imported,
-                          clang::SrcMgr::CharacteristicKind file_type) override;
+                          clang::SrcMgr::CharacteristicKind file_type);
 
   void FileChanged(clang::SourceLocation loc, FileChangeReason reason,
                    clang::SrcMgr::CharacteristicKind file_type,

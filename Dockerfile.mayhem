@@ -1,0 +1,9 @@
+FROM --platform=linux/amd64 ubuntu:22.04
+
+RUN apt-get update
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake llvm-dev libclang-14-dev clang git
+
+COPY . /repo
+WORKDIR /repo/build
+RUN cmake .. -G "Unix Makefiles"
+RUN make -j8
