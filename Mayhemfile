@@ -2,5 +2,4 @@ project: include-what-you-use
 target: include-what-you-use
 
 cmds:
-  - cmd: /repo/build/bin/include-what-you-use /test.c
-    filepath: /test.c
+  - cmd: /install/bin/include-what-you-use @@

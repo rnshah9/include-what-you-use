@@ -5,14 +5,11 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake llvm
 
 COPY . /repo
 WORKDIR /repo/build
-RUN cmake .. -G "Unix Makefiles"
+RUN cmake .. -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX=/install
 RUN make -j8
-
-RUN mkdir -p /deps
-RUN ldd /repo/build/bin/include-what-you-use | tr -s '[:blank:]' '\n' | grep '^/' | xargs -I % sh -c 'cp % /deps;'
+RUN make install
 
 FROM ubuntu:22.04 as package
-
-COPY --from=builder /deps /deps
-COPY --from=builder /repo/build/bin/include-what-you-use /repo/build/bin/include-what-you-use
-ENV LD_LIBRARY_PATH=/deps
+RUN apt-get update
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -y llvm-dev libclang-14-dev
+COPY --from=builder /install /install
