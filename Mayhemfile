@@ -3,3 +3,4 @@ target: include-what-you-use
 
 cmds:
   - cmd: /install/bin/include-what-you-use @@
+    filepath: /test.c
