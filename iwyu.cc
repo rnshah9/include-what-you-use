@@ -124,6 +124,7 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclBase.h"
 #include "clang/AST/DeclTemplate.h"
+#include "clang/AST/ExprConcepts.h"
 #include "clang/AST/NestedNameSpecifier.h"
 #include "clang/AST/OperationKinds.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -163,11 +164,15 @@ using clang::CallExpr;
 using clang::ClassTemplateDecl;
 using clang::ClassTemplateSpecializationDecl;
 using clang::CompilerInstance;
+using clang::ConceptSpecializationExpr;
 using clang::ConstructorUsingShadowDecl;
 using clang::Decl;
 using clang::DeclContext;
 using clang::DeclRefExpr;
 using clang::DeducedTemplateSpecializationType;
+using clang::ElaboratedType;
+using clang::EnumConstantDecl;
+using clang::EnumDecl;
 using clang::EnumType;
 using clang::Expr;
 using clang::FileEntry;
@@ -1246,7 +1251,7 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
              << "'. Looking for fwd-decl hint...\n";
 
     const NamedDecl* fwd_decl = nullptr;
-    for (const NamedDecl* redecl : GetClassRedecls(decl)) {
+    for (const NamedDecl* redecl : GetTagRedecls(decl)) {
       if (GetFileEntry(redecl) == macro_def_file && IsForwardDecl(redecl)) {
         fwd_decl = redecl;
         break;
@@ -1346,9 +1351,9 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
     // If we're a template specialization, we also accept
     // forward-declarations of the underlying template (vector<T>, not
     // vector<int>).
-    set<const NamedDecl*> redecls = GetClassRedecls(decl);
+    set<const NamedDecl*> redecls = GetTagRedecls(decl);
     if (const ClassTemplateSpecializationDecl* spec_decl = DynCastFrom(decl)) {
-      InsertAllInto(GetClassRedecls(spec_decl->getSpecializedTemplate()),
+      InsertAllInto(GetTagRedecls(spec_decl->getSpecializedTemplate()),
                     &redecls);
     }
 
@@ -1368,7 +1373,7 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
     // semantics we want.  Note if there's no definition anywhere, we
     // say the author does not want the full type (which is a good
     // thing, since there isn't one!)
-    if (const NamedDecl* dfn = GetDefinitionForClass(decl)) {
+    if (const NamedDecl* dfn = GetTagDefinition(decl)) {
       if (IsBeforeInSameFile(dfn, use_loc))
         return false;
       if (preprocessor_info().PublicHeaderIntendsToProvide(
@@ -1429,7 +1434,8 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
 
     const Type* deref_type
         = RemovePointersAndReferencesAsWritten(underlying_type);
-    if (CodeAuthorWantsJustAForwardDeclare(deref_type, GetLocation(decl))) {
+    if (isa<SubstTemplateTypeParmType>(deref_type) ||
+        CodeAuthorWantsJustAForwardDeclare(deref_type, GetLocation(decl))) {
       retval.insert(deref_type);
       // TODO(csilvers): include template type-args if appropriate.
       // This requires doing an iwyu visit of the instantiated
@@ -1537,6 +1543,20 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
     // Canonicalize the use location and report the use.
     used_loc = GetCanonicalUseLocation(used_loc, target_decl);
     const FileEntry* used_in = GetFileEntry(used_loc);
+
+    // Report EnumName instead of EnumName::Item.
+    // It supports for removing EnumName forward- (opaque-) declarations
+    // from output.
+    if (const auto* enum_constant_decl =
+            dyn_cast<EnumConstantDecl>(target_decl)) {
+      const auto* enum_decl =
+          cast<EnumDecl>(enum_constant_decl->getDeclContext());
+
+      // for unnamed enums, enumerator name is still preferred
+      if (enum_decl->getIdentifier())
+        target_decl = enum_decl;
+    }
+
     preprocessor_info().FileInfoFor(used_in)->ReportFullSymbolUse(
         used_loc, target_decl, use_flags, comment);
 
@@ -1676,7 +1696,7 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
     return true;
   }
 
-  bool VisitEnumDecl(clang::EnumDecl* decl) {
+  bool VisitEnumDecl(EnumDecl* decl) {
     if (CanIgnoreCurrentASTNode())
       return true;
 
@@ -1684,7 +1704,7 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
     if (const clang::Type* type = integer_type.getTypePtrOrNull()) {
       ReportTypeUse(CurrentLoc(), type);
     }
-    return Base::VisitEnumDecl(decl);
+    return true;
   }
 
   // If you say 'typedef Foo Bar', C++ says you just need to
@@ -1724,7 +1744,7 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
       current_ast_node()->set_in_forward_declare_context(false);
     }
 
-    return Base::VisitTypedefNameDecl(decl);
+    return true;
   }
 
   // If we're a declared (not defined) function, all our types --
@@ -1839,7 +1859,7 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
       ReportTypeUse(CurrentLoc(), return_type);
     }
 
-    return Base::VisitCXXMethodDecl(method_decl);
+    return true;
   }
 
   //------------------------------------------------------------
@@ -1858,7 +1878,7 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
       // catch(...): no type to act on here.
     }
 
-    return Base::VisitCXXCatchStmt(stmt);
+    return true;
   }
 
   // The type of the for-range-init expression is fully required, because the
@@ -1876,7 +1896,7 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
       // argument-dependent begin/end declarations.
     }
 
-    return Base::VisitCXXForRangeStmt(stmt);
+    return true;
   }
 
   // When casting non-pointers, iwyu will do the right thing
@@ -1986,19 +2006,9 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
 
       // Need the full to-type so we can call its constructor.
       case clang::CK_ConstructorConversion:
-        // 'Autocast' -- calling a one-arg, non-explicit constructor
-        // -- is a special case when it's done for a function call.
-        // iwyu requires the function-writer to provide the #include
-        // for the casted-to type, just so we don't have to require it
-        // here.  *However*, the function-author can override this
-        // iwyu requirement, in which case we're responsible for the
-        // casted-to type.  See IwyuBaseASTVisitor::VisitFunctionDecl.
-        if (!current_ast_node()->template HasAncestorOfType<CallExpr>() ||
-            ContainsKey(
-                GetCallerResponsibleTypesForAutocast(current_ast_node()),
-                RemovePointersAndReferences(to_type))) {
+        // 'Autocast' in function calls is handled in VisitCXXConstructExpr.
+        if (!current_ast_node()->template HasAncestorOfType<CallExpr>())
           required_full_types.push_back(to_type);
-        }
         break;
       // Need the full from-type so we can call its 'operator <totype>()'.
       case clang::CK_UserDefinedConversion:
@@ -2270,6 +2280,25 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
     if (CanIgnoreCurrentASTNode())  return true;
     ReportIfReferenceVararg(expr->getArgs(), expr->getNumArgs(),
                             expr->getConstructor());
+
+    // 'Autocast' -- calling a one-arg, non-explicit constructor
+    // -- is a special case when it's done for a function call.
+    // iwyu requires the function-writer to provide the #include
+    // for the casted-to type, just so we don't have to require it
+    // here.  *However*, the function-author can override this
+    // iwyu requirement, in which case we're responsible for the
+    // casted-to type.  See IwyuBaseASTVisitor::VisitFunctionDecl.
+    // Explicitly written CXXTemporaryObjectExpr are ignored here.
+    if (expr->getStmtClass() == Stmt::StmtClass::CXXConstructExprClass) {
+      const Type* type = expr->getType().getTypePtr();
+      if (current_ast_node()->template HasAncestorOfType<CallExpr>() &&
+          ContainsKey(GetCallerResponsibleTypesForAutocast(current_ast_node()),
+                      RemoveReferenceAsWritten(type))) {
+        if (!CanIgnoreType(type))
+          ReportTypeUse(CurrentLoc(), type);
+      }
+    }
+
     return true;
   }
 
@@ -2462,7 +2491,7 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
         }
     }
 
-    return Base::VisitType(type);
+    return true;
   }
 
   bool VisitTemplateSpecializationType(TemplateSpecializationType* type) {
@@ -2534,10 +2563,8 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
   // this the canonical place to figure out if we can forward-declare.
   bool CanForwardDeclareType(const ASTNode* ast_node) const {
     CHECK_(ast_node->IsA<Type>());
-    // Cannot forward-declare an enum even if it's in a forward-declare context.
-    // TODO(vsapsai): make enums forward-declarable in C++11.
-    if (ast_node->IsA<EnumType>())
-      return false;
+    if (const auto* enum_type = ast_node->GetAs<EnumType>())
+      return CanBeOpaqueDeclared(enum_type);
     // If we're in a forward-declare context, well then, there you have it.
     if (ast_node->in_forward_declare_context())
       return true;
@@ -2584,6 +2611,10 @@ class IwyuBaseAstVisitor : public BaseAstVisitor<Derived> {
         }
 
         parent_type = GetTypeOf(decl);
+      } else if (ast_node->IsA<ElaboratedType>()) {
+        // If it's not a ValueDecl, it must be a type decl. Elaborated types in
+        // type decls are forward-declarable.
+        return true;
       }
     }
 
@@ -2955,6 +2986,9 @@ class InstantiatedTemplateVisitor
     if (node->ParentIsA<NestedNameSpecifier>()) {
       return true;
     }
+
+    if (const auto* enum_type = dyn_cast<EnumType>(type))
+      return !CanBeOpaqueDeclared(enum_type);
 
     // If we're inside a typedef, we don't need our full type info --
     // in this case we follow what the C++ language allows and let
@@ -3819,7 +3853,7 @@ class IwyuAstConsumer
       // enclosing class.  If the nested class is actually defined in
       // the enclosing class, then we're fine; if not, we need to keep
       // the first forward-declaration.
-      } else if (IsNestedClassAsWritten(current_ast_node())) {
+      } else if (IsNestedTagAsWritten(current_ast_node())) {
         if (!decl->getDefinition() || decl->getDefinition()->isOutOfLine()) {
           // TODO(kimgr): Member class redeclarations are illegal, per C++
           // standard DR85, so this check for first redecl can be removed.
@@ -3977,6 +4011,14 @@ class IwyuAstConsumer
     }
 
     return Base::VisitUnaryExprOrTypeTraitExpr(expr);
+  }
+
+  bool VisitConceptSpecializationExpr(ConceptSpecializationExpr* expr) {
+    if (CanIgnoreCurrentASTNode())
+      return true;
+    ReportDeclUse(CurrentLoc(), expr->getNamedConcept());
+    // TODO(bolshakov): analyze type parameter usage.
+    return Base::VisitConceptSpecializationExpr(expr);
   }
 
   // --- Visitors of types derived from clang::Type.
